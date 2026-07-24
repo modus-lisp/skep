@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# skep's buzz-compatible CLI. Put this on an ACP agent's PATH (buzz-acp style) so
+# the agent can reply into a channel with the exact command it uses in real Buzz:
+#   buzz messages send --channel <uuid> --text <str> [--reply-to <id>] [--mention <pk>]…
+# Reads BUZZ_RELAY_URL / BUZZ_PRIVATE_KEY / BUZZ_AUTH_TAG from the env.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../src" && pwd)"
+exec sbcl --noinform --disable-ldb --script "$DIR/buzz-main.lisp" "$@"

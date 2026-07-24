@@ -1,0 +1,6 @@
+*.fasl
+*.o
+*~
+.DS_Store
+/tmp/
+*.core
