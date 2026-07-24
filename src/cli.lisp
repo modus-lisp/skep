@@ -2,7 +2,7 @@
 ;;;;
 ;;;; A `buzz`-compatible send CLI. This is the shim an ACP agent shells out to in
 ;;;; order to reach the channel — Buzz's contract is that the agent replies with:
-;;;;   buzz messages send --channel <uuid> --text <str> [--reply-to <id>] [--mention <pk>]…
+;;;;   buzz messages send --channel <uuid> --content <str> [--reply-to <id>] [--mention <pk>]…
 ;;;; reading BUZZ_RELAY_URL / BUZZ_PRIVATE_KEY / BUZZ_AUTH_TAG from the env. With
 ;;;; this present in the agent's cwd, an unmodified Buzz agent (or operandi as the
 ;;;; ACP agent) can post into skep exactly as it would into a real Buzz relay.
@@ -79,12 +79,12 @@
     (flet ((flag1 (k) (first (gethash k flags))))
       (cond
         ((and (equal (first pos) "messages") (equal (second pos) "send"))
-         (let ((channel (flag1 "channel")) (text (flag1 "text"))
+         (let ((channel (flag1 "channel")) (text (or (flag1 "content") (flag1 "text")))
                (reply (flag1 "reply-to")) (mentions (gethash "mention" flags))
                (relay (or (flag1 "relay") (sb-ext:posix-getenv "BUZZ_RELAY_URL")))
                (pk (or (flag1 "private-key") (sb-ext:posix-getenv "BUZZ_PRIVATE_KEY"))))
            (unless (and channel text pk)
-             (format *error-output* "usage: messages send --channel <id> --text <str> ~
+             (format *error-output* "usage: messages send --channel <id> --content <str> ~
                                      [--reply-to <id>] [--mention <pk>]…  ~
                                      (needs BUZZ_PRIVATE_KEY)~%")
              (return-from main 2))

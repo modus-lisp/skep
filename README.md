@@ -26,7 +26,7 @@ goose, or claude-code — anything that speaks the
 |---|---|
 | `src/nostr.lisp` | minimal Nostr client — event id/sign/verify (Schnorr), keys, ws publish/fetch. |
 | `src/secp256k1.lisp` · `schnorr.lisp` · `bech32.lisp` | vendored, dependency-free crypto (BIP-340 + bech32). |
-| `src/skep.lisp` | the **relay** (general event store, NIP-01 REQ/EVENT, `#h`/`#p` filters, NIP-42 auth, private-channel membership gating) + the NIP-29 message/channel model + a NIP-42-aware client. |
+| `src/skep.lisp` | the **relay** (general event store, NIP-01 REQ/EVENT, `#h`/`#p` filters, NIP-42 auth, private-channel membership gating) + a **Buzz HTTP REST facade** (`POST /events`/`/query`/`/count`, **NIP-98** auth) on the *same port* + the NIP-29 message/channel model + a NIP-42-aware client. |
 | `src/host.lisp` | the `buzz-acp` equivalent — watches for `#p` mentions of the agent, runs it, posts a NIP-10-threaded reply. Model call injected via `*answer-fn*`. |
 | `src/acp-client.lisp` | the **ACP client** that makes skep an agent-agnostic host: spawns an ACP agent subprocess and drives it over stdio (initialize → session/new → session/prompt, streaming + permission). |
 | `src/cli.lisp` + `bin/buzz` | the `buzz`-compatible send CLI: `buzz messages send --channel <id> --text <str> [--reply-to <id>] [--mention <pk>]…`, reading `BUZZ_RELAY_URL`/`BUZZ_PRIVATE_KEY`/`BUZZ_AUTH_TAG`. Put `bin/buzz` on an ACP agent's PATH and an unmodified Buzz agent can post into skep. |
@@ -48,6 +48,12 @@ and drives the agent over ACP → a threaded reply lands on the channel. Private
 channels are members-only (NIP-42 + membership). The `buzz` CLI round-trips, so a
 real Buzz agent can join, and skep's client can authenticate into a real Buzz
 relay. **64/64 oracles green.**
+
+**Interop with the real Buzz CLI is proven.** skep serves ws (Nostr) *and* the
+Buzz HTTP REST API on one port, so Block's unmodified `buzz` binary publishes to
+and reads from skep — in both directions — over its actual HTTP + NIP-98
+protocol, no Docker required (skep is the relay). See `test/interop-buzz.sh`
+(`cargo build -p buzz-cli` from github.com/block/buzz, then run the harness).
 
 Roadmap: presence/typing + reactions (kind 7); session-per-thread reuse
 (`session/load`); a live interop test against real `buzz-acp` + goose.

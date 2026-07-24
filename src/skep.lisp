@@ -138,6 +138,7 @@
    (ic:digest-sequence :sha1 (sb-ext:string-to-octets (concatenate 'string key +ws-guid+)
                                                        :external-format :latin-1))))
 (defun read-http-request (stream)
+  "Read the request head (up to CRLFCRLF); return (values request-line headers-alist)."
   (let ((buf (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
     (loop for b = (read-byte stream nil nil) while b do
       (vector-push-extend b buf)
@@ -145,33 +146,119 @@
                  (= (aref buf (- (length buf) 4)) 13) (= (aref buf (- (length buf) 3)) 10)
                  (= (aref buf (- (length buf) 2)) 13) (= (aref buf (- (length buf) 1)) 10))
         (return))
-      (when (> (length buf) 16384) (return)))
-    (let ((lines (ppcre:split "\\r\\n" (sb-ext:octets-to-string buf :external-format :latin-1))) (out '()))
-      (dolist (l (cdr lines) (nreverse out))
+      (when (> (length buf) 65536) (return)))
+    (let* ((lines (ppcre:split "\\r\\n" (sb-ext:octets-to-string buf :external-format :latin-1)))
+           (req-line (first lines)) (out '()))
+      (dolist (l (cdr lines))
         (let ((c (position #\: l)))
           (when c (push (cons (string-downcase (string-trim " " (subseq l 0 c)))
-                              (string-trim " " (subseq l (1+ c)))) out)))))))
-(defun ws-handshake (stream)
+                              (string-trim " " (subseq l (1+ c)))) out))))
+      (values req-line (nreverse out)))))
+;;; ---------------------- Buzz HTTP facade (REST) -----------------------
+;;; The real Buzz CLI talks to the relay over HTTP, not the ws Nostr protocol:
+;;;   POST /events  — publish a signed Nostr event (body = the JSON event)
+;;;   POST /query   — read events (body = a JSON array of Nostr filters)
+;;;   POST /count   — count matching events
+;;; each authenticated with NIP-98 (an Authorization: Nostr <base64 kind-27235
+;;; event> header). We serve these on the SAME listener as the ws relay — one
+;;; port does ws + HTTP, exactly like a real Buzz relay — so `buzz messages
+;;; send`/`get` interoperate with skep directly.
+(defun parse-request-line (line)
+  (let* ((s1 (and line (position #\Space line)))
+         (s2 (and s1 (position #\Space line :start (1+ s1)))))
+    (if (and s1 s2) (values (subseq line 0 s1) (subseq line (1+ s1) s2))
+        (values nil nil))))
+(defun http-write (stream status body &optional (ctype "application/json"))
   (let* ((crlf (coerce '(#\Return #\Newline) 'string))
-         (key (cdr (assoc "sec-websocket-key" (read-http-request stream) :test #'equal))))
+         (bytes (sb-ext:string-to-octets body :external-format :utf-8))
+         (head (concatenate 'string
+                 "HTTP/1.1 " status crlf "Content-Type: " ctype crlf
+                 "Access-Control-Allow-Origin: *" crlf
+                 "Content-Length: " (princ-to-string (length bytes)) crlf
+                 "Connection: close" crlf crlf)))
+    (write-sequence (sb-ext:string-to-octets head :external-format :latin-1) stream)
+    (write-sequence bytes stream)
+    (force-output stream)))
+(defun sha256-hex (bytes) (ic:byte-array-to-hex-string (ic:digest-sequence :sha256 bytes)))
+(defun verify-nip98 (auth method path body)
+  "Verify a NIP-98 header ('Nostr <base64(kind-27235 event)>'): valid sig, method
+   tag, `u` path, and payload = sha256(body). Returns the signer pubkey or NIL."
+  (ignore-errors
+    (when (and auth (>= (length auth) 6) (string-equal (subseq auth 0 6) "Nostr "))
+      (let* ((bytes (cl-base64:base64-string-to-usb8-array (string-trim " " (subseq auth 6))))
+             (ev (jzon:parse (sb-ext:octets-to-string bytes :external-format :utf-8))))
+        (when (and (= 27235 (truncate (gethash "kind" ev)))
+                   (n:verify-event ev)
+                   (equal method (tag-val ev "method"))
+                   (let ((u (tag-val ev "u"))) (and u (search path u)))
+                   (let ((pl (tag-val ev "payload")))
+                     (or (zerop (length body))
+                         (and pl (string-equal pl (sha256-hex body))))))
+          (gethash "pubkey" ev))))))
+(defun rest-events (body pub stream)
+  (declare (ignore pub))
+  (let ((ev (ignore-errors (jzon:parse (sb-ext:octets-to-string body :external-format :utf-8)))))
     (cond
-      (key
-       (write-sequence (sb-ext:string-to-octets
-                        (concatenate 'string
-                          "HTTP/1.1 101 Switching Protocols" crlf
-                          "Upgrade: websocket" crlf "Connection: Upgrade" crlf
-                          "Sec-WebSocket-Accept: " (ws-accept-key key) crlf crlf)
-                        :external-format :latin-1)
-                       stream)
-       (force-output stream) t)
-      (t
-       (write-sequence (sb-ext:string-to-octets
-                        (concatenate 'string
-                          "HTTP/1.1 200 OK" crlf "Content-Type: application/nostr+json" crlf
-                          "Access-Control-Allow-Origin: *" crlf "Connection: close" crlf crlf *nip11*)
-                        :external-format :utf-8)
-                       stream)
-       (force-output stream) nil))))
+      ((not (and (hash-table-p ev) (n:verify-event ev)))
+       (http-write stream "400 Bad Request" "{\"error\":\"invalid event\"}"))
+      ((not (may-write-p ev))
+       (http-write stream "403 Forbidden" "{\"error\":\"restricted: not a member\"}"))
+      (t (let ((accepted (relay-ingest ev)))
+           (when (or accepted (ephemeral-p (truncate (gethash "kind" ev)))) (relay-broadcast ev))
+           (http-write stream "200 OK"
+                       (n:json (let ((h (make-hash-table :test 'equal)))
+                                 (setf (gethash "id" h) (gethash "id" ev)) h))))))))
+(defun query-filters (body)
+  (let ((f (ignore-errors (jzon:parse (sb-ext:octets-to-string body :external-format :utf-8)))))
+    (cond ((vectorp f) (coerce f 'list)) ((listp f) f) ((hash-table-p f) (list f)) (t nil))))
+(defun rest-query (body pub stream)
+  (let ((conn (list :authed-pubkey pub)) (matches '()) (flist (query-filters body)))
+    (dolist (ev (all-stored-events))
+      (when (and (some (lambda (f) (event-matches ev f)) flist) (conn-may-see-p conn ev))
+        (push ev matches)))
+    (setf matches (sort matches #'> :key (lambda (e) (truncate (gethash "created_at" e)))))
+    (http-write stream "200 OK" (n:json (coerce matches 'vector)))))
+(defun rest-count (body pub stream)
+  (declare (ignore pub))
+  (let* ((flist (query-filters body))
+         (n (count-if (lambda (ev) (some (lambda (f) (event-matches ev f)) flist)) (all-stored-events))))
+    (http-write stream "200 OK" (format nil "{\"count\":~d}" n))))
+(defun handle-rest (path body auth stream)
+  (let ((pub (verify-nip98 auth "POST" path body)))
+    (cond ((null pub) (http-write stream "401 Unauthorized" "{\"error\":\"nip98 auth required\"}"))
+          ((equal path "/events") (rest-events body pub stream))
+          ((equal path "/query")  (rest-query body pub stream))
+          ((equal path "/count")  (rest-count body pub stream))
+          (t (http-write stream "404 Not Found" "{}")))))
+
+(defun http-serve (stream)
+  "Handle one request on STREAM. Returns :ws to hand off to the websocket loop,
+   or :done after serving a NIP-11 / Buzz-REST response."
+  (multiple-value-bind (req-line headers) (read-http-request stream)
+    (let ((key (cdr (assoc "sec-websocket-key" headers :test #'equal)))
+          (crlf (coerce '(#\Return #\Newline) 'string)))
+      (cond
+        (key
+         (write-sequence (sb-ext:string-to-octets
+                          (concatenate 'string
+                            "HTTP/1.1 101 Switching Protocols" crlf
+                            "Upgrade: websocket" crlf "Connection: Upgrade" crlf
+                            "Sec-WebSocket-Accept: " (ws-accept-key key) crlf crlf)
+                          :external-format :latin-1)
+                         stream)
+         (force-output stream) :ws)
+        (t
+         (multiple-value-bind (method path) (parse-request-line req-line)
+           (if (and (equal method "POST")
+                    (member path '("/events" "/query" "/count") :test #'equal))
+               (let* ((clen (let ((v (cdr (assoc "content-length" headers :test #'equal))))
+                              (or (and v (parse-integer v :junk-allowed t)) 0)))
+                      (body (if (plusp clen) (read-n stream clen)
+                                (make-array 0 :element-type '(unsigned-byte 8))))
+                      (auth (cdr (assoc "authorization" headers :test #'equal))))
+                 (handle-rest path body auth stream))
+               (http-write stream "200 OK" *nip11* "application/nostr+json")))
+         :done)))))
 (defun relay-send (conn string)
   (let ((frame (fast-websocket:compose-frame (sb-ext:string-to-octets string :external-format :utf-8) :type :text)))
     (sb-thread:with-mutex ((getf conn :wlock))
@@ -298,7 +385,7 @@
          (conn (list :stream stream :wlock (sb-thread:make-mutex) :subs (make-hash-table :test 'equal)
                      :authed-pubkey nil :challenge nil)))
     (unwind-protect
-         (when (handler-case (ws-handshake stream) (serious-condition () nil))
+         (when (eq :ws (handler-case (http-serve stream) (serious-condition () nil)))
            (sb-thread:with-mutex (*relay-lock*) (push conn *relay-conns*))
            ;; NIP-42: challenge immediately on connect (Buzz-style).
            (let ((challenge (rand-hex 16)))
