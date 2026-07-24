@@ -3,8 +3,8 @@
 ;;; BIP-340 Schnorr signatures over secp256k1 — the scheme Nostr uses for
 ;;; event signatures (and Bitcoin Taproot). Built on the curve ops in
 ;;; skep.crypto.secp256k1 (points are (x . y) conses, infinity is
-;;; (:infinity . nil)). VERIFY is what siteglass needs for agent auth
-;;; (Nostr NIP-98); SIGN is included for tests/round-trips.
+;;; (:infinity . nil)). VERIFY validates Nostr event/auth signatures;
+;;; SIGN produces them (and is used for tests/round-trips).
 ;;;
 ;;; Verified against the canonical bitcoin/bips bip-0340 test vectors.
 

@@ -1,20 +1,10 @@
 ;;; src/secp256k1.lisp
 ;;;
-;;; secp256k1 curve operations + ECDSA signing with RFC 6979.
+;;; secp256k1 curve operations.
 ;;;
-;;; Curve math (constants, modular arithmetic, point operations, scalar
-;;; multiplication) is vendored verbatim from the operator's other Lisp
-;;; project, modus (https://github.com/ynniv/modus, MIT licensed,
-;;; copyright 2025 The Modus Development Team), where it powers
-;;; Nostr/Bitcoin BIP-340 Schnorr signatures. Modus's Schnorr is not
-;;; reproduced here; we add ECDSA-with-RFC6979 instead, which is what
-;;; Ethereum (and therefore Polymarket) needs.
-;;;
-;;; ECDSA is built on top of ironclad for HMAC-SHA-256 (RFC 6979) and
-;;; raw secp256k1 curve ops above. Result of SECP-ECDSA-SIGN-RAW is the
-;;; canonical (r, s, v) triple — r and s as integers, v as the 0/1
-;;; recovery byte that Ethereum signatures append (offset to 27/28 by
-;;; the higher-level EIP-712 layer).
+;;; Constants, modular arithmetic, point operations, and scalar multiplication
+;;; over the secp256k1 field — the math skep's BIP-340 Schnorr signatures build
+;;; on (see schnorr.lisp). Depends only on ironclad.
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :asdf)
@@ -30,15 +20,12 @@
            ;; field & curve ops (re-exported for callers building on top)
            #:secp-mod #:secp-add #:secp-sub #:secp-mul #:secp-sq #:secp-neg
            #:secp-inv #:secp-double #:secp-add-points #:secp-mul-point
-           #:secp-on-curve-p #:secp-pubkey
-           ;; ECDSA
-           #:ecdsa-sign-raw #:ecdsa-verify
-           #:rfc6979-k))
+           #:secp-on-curve-p #:secp-pubkey))
 
 (in-package #:skep.crypto.secp256k1)
 
 ;;; -----------------------------------------------------------------------
-;;; Curve math (vendored from modus/crypto/secp256k1.lisp lines 12-135)
+;;; Curve math
 ;;; -----------------------------------------------------------------------
 
 (defparameter *secp256k1-p* nil)
@@ -171,124 +158,3 @@
       (let ((x (secp-x p)) (y (secp-y p)))
         (= (secp-sq y) (secp-mod (+ (secp-mul x (secp-sq x)) 7))))))
 
-;;; -----------------------------------------------------------------------
-;;; ECDSA + RFC 6979 (deterministic k)
-;;; -----------------------------------------------------------------------
-;;;
-;;; RFC 6979 derives k from the message hash and private key via
-;;; HMAC-SHA-256 in a fixed-point construction. Reference: RFC 6979 §3.2.
-;;; This is what every Ethereum signer (geth, ethers.js, web3.py,
-;;; py-clob-client, …) uses, and it's what makes our signatures
-;;; reproducible against test vectors.
-
-(defun secp-inv-mod (a m)
-  "Modular inverse of A mod M (extended Euclidean) — used with M = N
-   (curve order) inside ECDSA, where SECP-INV (mod P) doesn't apply."
-  (let ((t0 0) (t1 1) (r0 m) (r1 (mod a m)))
-    (loop while (not (zerop r1)) do
-      (let* ((q (floor r0 r1))
-             (nr (- r0 (* q r1)))
-             (nt (- t0 (* q t1))))
-        (setf r0 r1 r1 nr t0 t1 t1 nt)))
-    (if (< t0 0) (+ t0 m) t0)))
-
-(defun bytes-mod-n (bytes n)
-  "RFC 6979 'bits2int mod n': convert BYTES big-endian to integer, then mod N."
-  (mod (bytes-to-int bytes) n))
-
-(defun bytes2octets (b n)
-  "RFC 6979 bits2octets: int(b) mod n, then encode as 32-byte big-endian."
-  (int-to-bytes32 (bytes-mod-n b n)))
-
-(defun hmac-sha256 (key msg)
-  "Keyed HMAC-SHA-256 returning a 32-byte array."
-  (let ((mac (ic:make-hmac key :sha256)))
-    (ic:update-hmac mac msg)
-    (ic:hmac-digest mac)))
-
-(defun rfc6979-k (privkey-int hash-bytes &optional (n nil))
-  "Deterministic K per RFC 6979 §3.2 over secp256k1 curve order N.
-   PRIVKEY-INT is the integer private key, HASH-BYTES is the message
-   hash (32 bytes for keccak-256). Returns an integer k in [1, N-1]."
-  (secp-init)
-  (let* ((n (or n *secp256k1-n*))
-         (x (int-to-bytes32 privkey-int))
-         (h1 hash-bytes)
-         ;; Step b: V = 0x01 0x01 ... (32 bytes)
-         (v (make-array 32 :element-type '(unsigned-byte 8)
-                          :initial-element #x01))
-         ;; Step c: K = 0x00 0x00 ... (32 bytes)
-         (k (make-array 32 :element-type '(unsigned-byte 8)
-                          :initial-element #x00))
-         (h1-octets (bytes2octets h1 n)))
-    (flet ((cat (&rest arrays)
-             (let* ((total (loop for a in arrays sum (length a)))
-                    (out (make-array total :element-type '(unsigned-byte 8)))
-                    (p 0))
-               (dolist (a arrays out)
-                 (loop for b across a do (setf (aref out p) b) (incf p))))))
-      ;; Step d: K = HMAC_K(V || 0x00 || x || h1)
-      (setf k (hmac-sha256 k (cat v #(#x00) x h1-octets)))
-      ;; Step e: V = HMAC_K(V)
-      (setf v (hmac-sha256 k v))
-      ;; Step f: K = HMAC_K(V || 0x01 || x || h1)
-      (setf k (hmac-sha256 k (cat v #(#x01) x h1-octets)))
-      ;; Step g: V = HMAC_K(V)
-      (setf v (hmac-sha256 k v))
-      ;; Step h: loop until we find a candidate k in [1, n-1].
-      (loop
-        (setf v (hmac-sha256 k v))
-        (let ((candidate (bytes-to-int v)))
-          (when (and (plusp candidate) (< candidate n))
-            (return candidate)))
-        ;; not in range — bump K, V and retry.
-        (setf k (hmac-sha256 k (cat v #(#x00))))
-        (setf v (hmac-sha256 k v))))))
-
-(defun ecdsa-sign-raw (privkey-int hash-bytes)
-  "Sign HASH-BYTES (32-byte digest) under PRIVKEY-INT. Returns (values
-   r s v) where R and S are integers in [1, N-1] and V is the 0/1
-   recovery id (Ethereum offsets it by 27 to get the on-the-wire value
-   in legacy signatures).
-
-   S is canonicalized to the lower half (R, S ≤ N/2) per BIP-62 / EIP-2,
-   which is what Ethereum nodes accept post-Homestead."
-  (secp-init)
-  (let* ((n *secp256k1-n*)
-         (z (mod (bytes-to-int hash-bytes) n)))
-    (loop
-      (let* ((k (rfc6979-k privkey-int hash-bytes))
-             (kg (secp-mul-point k (secp-generator)))
-             (r  (mod (secp-x kg) n)))
-        (when (zerop r) (return-from ecdsa-sign-raw nil))   ; retry path
-        (let* ((k-inv (mod (secp-inv-mod k n) n))
-               (s (mod (* k-inv (mod (+ z (* r privkey-int)) n)) n)))
-          (when (zerop s)
-            ;; degenerate — RFC 6979 says move on; very rare.
-            (return-from ecdsa-sign-raw nil))
-          (let* ((y (secp-y kg))
-                 ;; Canonicalize S: low-S form (BIP-62 / EIP-2).
-                 (high-s? (> s (ash n -1)))
-                 (s-can (if high-s? (- n s) s))
-                 ;; Recovery id: bit 0 = parity of R.y, bit 1 = R.x ≥ N
-                 ;; (the latter is rare when we keep r = R.x mod n).
-                 (v0 (if (oddp y) 1 0))
-                 (v  (if high-s? (logxor v0 1) v0)))
-            (return (values r s-can v))))))))
-
-(defun ecdsa-verify (pubkey-pt hash-bytes r s)
-  "Verify (R, S) against HASH-BYTES under PUBKEY-PT. Returns T or NIL."
-  (secp-init)
-  (let ((n *secp256k1-n*))
-    (cond
-      ((not (and (< 0 r n) (< 0 s n))) nil)
-      (t
-       (let* ((z (mod (bytes-to-int hash-bytes) n))
-              (s-inv (secp-inv-mod s n))
-              (u1 (mod (* z s-inv) n))
-              (u2 (mod (* r s-inv) n))
-              (p1 (secp-mul-point u1 (secp-generator)))
-              (p2 (secp-mul-point u2 pubkey-pt))
-              (sum (secp-add-points p1 p2)))
-         (and (not (secp-inf-p sum))
-              (= r (mod (secp-x sum) n))))))))
