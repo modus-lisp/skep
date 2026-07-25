@@ -55,6 +55,14 @@ and reads from skep — in both directions — over its actual HTTP + NIP-98
 protocol, no Docker required (skep is the relay). See `test/interop-buzz.sh`
 (`cargo build -p buzz-cli` from github.com/block/buzz, then run the harness).
 
+**And the full agent-host loop is proven with real `buzz-acp`.** Block's
+unmodified agent host connects to skep over ws, NIP-42-authenticates, discovers a
+channel, subscribes, receives an `@mention`, and drives an ACP agent through a
+complete turn — then the agent's reply (posted via `buzz messages send`) lands
+back on the channel, read by real `buzz get`. Every piece is real Buzz software
+except the stub agent (which stands in for e.g. operandi + a model). See
+`test/interop-buzz-acp.sh` (`cargo build -p buzz-acp -p buzz-cli`).
+
 Roadmap: presence/typing + reactions (kind 7); session-per-thread reuse
 (`session/load`); a live interop test against real `buzz-acp` + goose.
 
