@@ -3,7 +3,7 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."   # -> repo root
 fails=0
-for t in relay host auth cli acp-client; do
+for t in relay host auth cli acp-client nip29; do
   echo "### $t-test ###"
   out="$(timeout 300 sbcl --script "test/$t-test.lisp" 2>&1)"; code=$?
   echo "$out" | grep -E '  (ok|FAIL|ERR )|: [0-9]+ failure'

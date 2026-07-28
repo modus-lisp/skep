@@ -39,7 +39,8 @@
            #:new-channel #:add-member #:channel-members #:*channels*
            #:build-message #:post-message #:mentions-of #:h-tag #:tag-val
            #:kind-9-p #:content-of #:sender-of #:id-of #:reply-anchor
-           #:signed-auth-event #:nip42-fetch #:authed-publish))
+           #:signed-auth-event #:nip42-fetch #:authed-publish
+           #:relay-pubkey #:process-admin-event #:emit-group-discovery #:ensure-relay-key))
 (in-package #:skep)
 
 ;;; ------------------------------- config -------------------------------
@@ -203,8 +204,9 @@
        (http-write stream "400 Bad Request" "{\"error\":\"invalid event\"}"))
       ((not (may-write-p ev))
        (http-write stream "403 Forbidden" "{\"error\":\"restricted: not a member\"}"))
-      (t (let ((accepted (relay-ingest ev)))
-           (when (or accepted (ephemeral-p (truncate (gethash "kind" ev)))) (relay-broadcast ev))
+      (t (let ((accepted (relay-ingest ev)) (kind (truncate (gethash "kind" ev))))
+           (when (or accepted (ephemeral-p kind)) (relay-broadcast ev))
+           (when (and accepted (admin-kind-p kind)) (process-admin-event ev))
            (http-write stream "200 OK"
                        (n:json (let ((h (make-hash-table :test 'equal)))
                                  (setf (gethash "id" h) (gethash "id" ev)) h))))))))
@@ -326,7 +328,8 @@
        (let ((accepted (relay-ingest ev)))
          (relay-send conn (format nil "[\"OK\",~a,true,~a]" (jzon:stringify id)
                                   (if (or accepted (ephemeral-p kind)) "\"\"" "\"duplicate: have this event\"")))
-         (when (or accepted (ephemeral-p kind)) (relay-broadcast ev)))))))
+         (when (or accepted (ephemeral-p kind)) (relay-broadcast ev))
+         (when (and accepted (admin-kind-p kind)) (process-admin-event ev)))))))
 (defun relay-on-message (conn msg)
   (handler-case
       (let ((a (jzon:parse (if (stringp msg) msg (sb-ext:octets-to-string msg :external-format :utf-8)))))
@@ -403,6 +406,7 @@
       (sb-thread:with-mutex (*relay-lock*) (setf *relay-conns* (remove conn *relay-conns*)))
       (ignore-errors (usocket:socket-close sock)))))
 (defun start-relay (&optional (port *relay-port*))
+  (ensure-relay-key)
   (unless (and *relay-thread* (sb-thread:thread-alive-p *relay-thread*))
     (setf *relay-listener* (usocket:socket-listen "127.0.0.1" port :reuse-address t :element-type '(unsigned-byte 8)))
     (setf *relay-thread*
@@ -441,6 +445,108 @@
                     (gethash channel *channels*) c))))
   pubkey)
 (defun channel-members (channel) (getf (gethash channel *channels*) :members))
+
+;;; --------------------- NIP-29 relay-side groups -----------------------
+;;; A real Buzz relay turns client commands — kind 9007 (create), 9021 (join),
+;;; 9000 (put-user/add-member), 9002 (edit-metadata) — into RELAY-SIGNED
+;;; addressable group events: 39000 (metadata), 39001 (admins), 39002 (members).
+;;; Clients (buzz-cli's `channels create`, buzz-acp's channel discovery) read
+;;; those. skep reproduces this so a channel forms here directly — no seeding.
+(defvar *relay-sec* nil "the relay's own signing key (integer) for 39xxx events.")
+(defparameter *relay-key-file* (merge-pathnames ".skep/relay.key" (user-homedir-pathname)))
+(defun ensure-relay-key ()
+  (or *relay-sec*
+      (setf *relay-sec*
+            (if (probe-file *relay-key-file*)
+                (with-open-file (s *relay-key-file*) (parse-integer (read-line s) :radix 16))
+                (let ((k (nth-value 0 (n:gen-key))))
+                  (ignore-errors
+                    (ensure-directories-exist *relay-key-file*)
+                    (with-open-file (s *relay-key-file* :direction :output
+                                       :if-exists :supersede :if-does-not-exist :create)
+                      (format s "~(~64,'0x~)~%" k)))
+                  k)))))
+(defun relay-pubkey () (n:hex-pubkey (ensure-relay-key)))
+(defun admin-kind-p (kind) (<= 9000 kind 9022))
+
+(defun grp-create (ev chan actor)
+  (sb-thread:with-mutex (*store-lock*)
+    (unless (gethash chan *channels*)
+      (setf (gethash chan *channels*)
+            (list :name (or (tag-val ev "name") "channel")
+                  :visibility (if (equal (tag-val ev "visibility") "private") :private :open)
+                  :type (or (tag-val ev "channel_type") "stream")
+                  :description (tag-val ev "about")
+                  :members (list actor) :owner actor :admins (list actor))))))
+(defun grp-join (chan actor)
+  (let ((g (gethash chan *channels*)))
+    (when (and g (eq (getf g :visibility) :open))
+      (sb-thread:with-mutex (*store-lock*)
+        (setf (getf g :members) (adjoin actor (getf g :members) :test #'equal)
+              (gethash chan *channels*) g)))))
+(defun grp-put-user (ev chan)
+  (let ((g (gethash chan *channels*)) (target (tag-val ev "p")) (role (tag-val ev "role")))
+    (when (and g target)
+      (sb-thread:with-mutex (*store-lock*)
+        (setf (getf g :members) (adjoin target (getf g :members) :test #'equal))
+        (when (member role '("admin" "owner") :test #'equal)
+          (setf (getf g :admins) (adjoin target (getf g :admins) :test #'equal)))
+        (setf (gethash chan *channels*) g)))))
+(defun grp-edit (ev chan)
+  (let ((g (gethash chan *channels*)))
+    (when g
+      (sb-thread:with-mutex (*store-lock*)
+        (let ((name (tag-val ev "name")) (about (tag-val ev "about")) (vis (tag-val ev "visibility")))
+          (when name (setf (getf g :name) name))
+          (when about (setf (getf g :description) about))
+          (when vis (setf (getf g :visibility) (if (equal vis "private") :private :open))))
+        (setf (gethash chan *channels*) g)))))
+
+(defvar *disc-ts* (make-hash-table :test 'equal) "\"kind:chan\" -> last emitted created_at (monotonic).")
+(defun disc-ts (kind chan)
+  (let* ((k (format nil "~a:~a" kind chan)) (prev (gethash k *disc-ts* 0))
+         (ts (max (n:unix-now) (1+ prev))))
+    (setf (gethash k *disc-ts*) ts) ts))
+(defun member-role (g pub)
+  (cond ((equal pub (getf g :owner)) "owner")
+        ((member pub (getf g :admins) :test #'equal) "admin")
+        (t "member")))
+(defun emit-signed (rsec rpub kind tags chan)
+  (let ((ev (n:sign-event rsec rpub (disc-ts kind chan) kind (coerce tags 'vector) "")))
+    (when (relay-ingest ev) (relay-broadcast ev))))
+(defun emit-group-discovery (chan)
+  "Emit relay-signed 39000/39001/39002 for CHAN's current group state."
+  (let ((g (gethash chan *channels*)) (rsec (ensure-relay-key)))
+    (when g
+      (let ((rpub (n:hex-pubkey rsec)) (members (getf g :members)))
+        ;; 39000 metadata
+        (let ((tags (list (vector "d" chan) (vector "name" (getf g :name)))))
+          (when (getf g :description) (setf tags (append tags (list (vector "about" (getf g :description))))))
+          (setf tags (append tags (list (if (eq (getf g :visibility) :private) (vector "private") (vector "public"))
+                                         (vector "closed") (vector "t" (getf g :type)))))
+          (emit-signed rsec rpub 39000 tags chan))
+        ;; 39001 admins
+        (let ((tags (list (vector "d" chan))))
+          (dolist (m members)
+            (when (member m (cons (getf g :owner) (getf g :admins)) :test #'equal)
+              (setf tags (append tags (list (vector "p" m (member-role g m)))))))
+          (emit-signed rsec rpub 39001 tags chan))
+        ;; 39002 members
+        (let ((tags (list (vector "d" chan))))
+          (dolist (m members) (setf tags (append tags (list (vector "p" m (member-role g m))))))
+          (emit-signed rsec rpub 39002 tags chan))))))
+
+(defun process-admin-event (ev)
+  "After a NIP-29 command (9007/9021/9000/9002) is ingested, update group state
+   and (re-)emit the relay-signed discovery events."
+  (let ((kind (truncate (gethash "kind" ev))) (chan (h-tag ev)) (actor (sender-of ev)))
+    (when chan
+      (case kind
+        (9007 (grp-create ev chan actor))
+        (9021 (grp-join chan actor))
+        (9000 (grp-put-user ev chan))
+        (9002 (grp-edit ev chan)))
+      (emit-group-discovery chan))))
 
 ;;; --------------------------- message model ----------------------------
 ;;; kind 9 group chat, Buzz-exact: h-tag binds the channel, NIP-10 e-tags thread,

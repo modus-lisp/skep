@@ -25,13 +25,20 @@ lisp(){ local f; f=$(mktemp /tmp/skep-acp-XXXX.lisp); printf '%s\n' "$1" > "$f";
 # fresh keypairs (agent = the buzz-acp identity; human = the poster)
 readarray -t K < <(lisp "(load \"$REPO/src/skep.lisp\")(in-package #:skep)(dolist (w '(a h))(multiple-value-bind (s p n)(n:gen-key)(declare (ignore n))(format t \"~(~64,'0x~) ~a~%\" s p)))")
 AGENT_PRIV=${K[0]% *}; AGENT_PUB=${K[0]#* }; HUMAN_PRIV=${K[1]% *}
-CH="8fc2684a-7c4b-4e9f-8f5b-51ae665a7605"
 
 # skep relay
 lisp "(load \"$REPO/src/skep.lisp\")(in-package #:skep)(start-relay $PORT)(loop (sleep 3600))" &
 SKEP=$!; trap 'kill $SKEP $ACP 2>/dev/null' EXIT; sleep 6
-# seed a channel the agent is a member of (kind 39002 members + 39000 metadata)
-lisp "(load \"$REPO/src/skep.lisp\")(in-package #:skep)(let*((rk (n:gen-key))(rp (n:hex-pubkey rk)))(post-message (n:sign-event rk rp (n:unix-now) 39002 (vector (vector \"d\" \"$CH\")(vector \"p\" \"$AGENT_PUB\")) \"\") :url \"ws://127.0.0.1:$PORT\")(post-message (n:sign-event rk rp (n:unix-now) 39000 (vector (vector \"d\" \"$CH\")(vector \"name\" \"interop\")) \"{}\") :url \"ws://127.0.0.1:$PORT\"))"
+
+# form the channel with the REAL buzz CLI (skep's NIP-29 reducer handles 9007/9021):
+# human creates it, the agent joins — no manual seeding.
+CREATE=$("$BUZZ" --relay http://127.0.0.1:$PORT --private-key $HUMAN_PRIV \
+  channels create --name interop --visibility open --type stream 2>&1)
+CH=$(echo "$CREATE" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+[ -n "$CH" ] && ok "buzz channels create formed a channel on skep ($CH)" || bad "channels create failed ($CREATE)"
+"$BUZZ" --relay http://127.0.0.1:$PORT --private-key $AGENT_PRIV channels join --channel "$CH" >/dev/null 2>&1
+"$BUZZ" --relay http://127.0.0.1:$PORT --private-key $AGENT_PRIV channels get --channel "$CH" 2>&1 \
+  | grep -q '"name":"interop"' && ok "real buzz reads skep's relay-signed channel metadata" || bad "channels get failed"
 
 # real buzz-acp -> skep, driving the posting stub agent
 export BUZZ_PRIVATE_KEY=$AGENT_PRIV BUZZ_RELAY_URL=ws://127.0.0.1:$PORT BUZZ_CLI_BIN="$BUZZ"

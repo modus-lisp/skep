@@ -26,7 +26,7 @@ goose, or claude-code — anything that speaks the
 |---|---|
 | `src/nostr.lisp` | minimal Nostr client — event id/sign/verify (Schnorr), keys, ws publish/fetch. |
 | `src/secp256k1.lisp` · `schnorr.lisp` · `bech32.lisp` | vendored, dependency-free crypto (BIP-340 + bech32). |
-| `src/skep.lisp` | the **relay** (general event store, NIP-01 REQ/EVENT, `#h`/`#p` filters, NIP-42 auth, private-channel membership gating) + a **Buzz HTTP REST facade** (`POST /events`/`/query`/`/count`, **NIP-98** auth) on the *same port* + the NIP-29 message/channel model + a NIP-42-aware client. |
+| `src/skep.lisp` | the **relay** (general event store, NIP-01 REQ/EVENT, `#h`/`#p` filters, NIP-42 auth, private-channel membership gating) + a **Buzz HTTP REST facade** (`POST /events`/`/query`/`/count`, **NIP-98** auth) on the *same port* + **relay-side NIP-29 group management** (kind 9007 create / 9021 join / 9000 put-user → relay-signed 39000/39001/39002) + the NIP-29 message model + a NIP-42-aware client. |
 | `src/host.lisp` | the `buzz-acp` equivalent — watches for `#p` mentions of the agent, runs it, posts a NIP-10-threaded reply. Model call injected via `*answer-fn*`. |
 | `src/acp-client.lisp` | the **ACP client** that makes skep an agent-agnostic host: spawns an ACP agent subprocess and drives it over stdio (initialize → session/new → session/prompt, streaming + permission). |
 | `src/cli.lisp` + `bin/buzz` | the `buzz`-compatible send CLI: `buzz messages send --channel <id> --text <str> [--reply-to <id>] [--mention <pk>]…`, reading `BUZZ_RELAY_URL`/`BUZZ_PRIVATE_KEY`/`BUZZ_AUTH_TAG`. Put `bin/buzz` on an ACP agent's PATH and an unmodified Buzz agent can post into skep. |
@@ -59,7 +59,9 @@ protocol, no Docker required (skep is the relay). See `test/interop-buzz.sh`
 unmodified agent host connects to skep over ws, NIP-42-authenticates, discovers a
 channel, subscribes, receives an `@mention`, and drives an ACP agent through a
 complete turn — then the agent's reply (posted via `buzz messages send`) lands
-back on the channel, read by real `buzz get`. Every piece is real Buzz software
+back on the channel, read by real `buzz get`. The channel itself is formed by
+real **`buzz channels create`** + **`buzz channels join`** (skep's NIP-29 reducer
+handles the 9007/9021 commands) — no seeding. Every piece is real Buzz software
 except the stub agent (which stands in for e.g. operandi + a model). See
 `test/interop-buzz-acp.sh` (`cargo build -p buzz-acp -p buzz-cli`).
 
