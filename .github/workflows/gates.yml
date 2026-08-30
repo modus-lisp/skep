@@ -15,5 +15,20 @@ jobs:
           submodules: recursive
       - name: Install SBCL
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
+
+      # skep's sources load quicklisp themselves — src/skep.lisp does
+      # (load "~/quicklisp/setup.lisp") and quickloads its libraries — so the runner
+      # has to have one.  That is why the suite passed on every developer machine and
+      # nowhere else: the init file had already done it.  The list mirrors the
+      # quickloads in src/skep.lisp, src/nostr.lisp and src/schnorr.lisp; quicklisp
+      # resolves their own dependencies from there.
+      - name: Quicklisp
+        run: |
+          curl -sSLo /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
+          sbcl --non-interactive --load /tmp/quicklisp.lisp \
+               --eval '(quicklisp-quickstart:install :path "~/quicklisp/")' \
+               --eval '(ql-util:without-prompting (ql:add-to-init-file))'
+          sbcl --non-interactive --eval '(ql:quickload (list :usocket :fast-websocket :cl-ppcre :ironclad :cl-base64 :com.inuoe.jzon :bordeaux-threads :websocket-driver-client))'
+
       - name: Oracles
         run: bash test/run.sh
