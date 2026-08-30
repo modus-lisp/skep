@@ -1,0 +1,19 @@
+name: gates
+on: [push, pull_request]
+
+# ONE PLATFORM: pure Common Lisp, no FFI, no platform calls.
+#
+# skep is not an ASDF system — it has no .asd at all, and load.lisp loads its sources
+# in order.  Its suite is test/run.sh, which runs six oracles and exits non-zero if any
+# fails.  That already existed and was already green; nothing was running it.
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install SBCL
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
+      - name: Oracles
+        run: bash test/run.sh
