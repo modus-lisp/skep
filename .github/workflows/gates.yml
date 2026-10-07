@@ -38,7 +38,9 @@ jobs:
             echo "quicklisp install attempt $attempt failed; retrying"
             sleep 10
           done
-          sbcl --non-interactive --eval '(ql:quickload (list :usocket :fast-websocket :cl-ppcre :ironclad :cl-base64 :com.inuoe.jzon :bordeaux-threads :websocket-driver-client))'
+          # json-simple is a modus-lisp sibling, not on Quicklisp: local-projects.
+          git clone --depth 1 https://github.com/modus-lisp/json-simple.git ~/quicklisp/local-projects/json-simple
+          sbcl --non-interactive --eval '(ql:quickload (list :usocket :fast-websocket :cl-ppcre :ironclad :cl-base64 :json-simple :bordeaux-threads :websocket-driver-client))'
 
       - name: Oracles
         run: bash test/run.sh
