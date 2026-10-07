@@ -144,7 +144,9 @@
               do (when (or (getf cl :dead)
                            (>= (get-internal-real-time) deadline))
                    (return))
-                 (sb-thread:condition-wait (getf box :cv) (getf box :lock) :timeout 1))))
+                 ;; A timed-out CONDITION-WAIT returns NIL WITHOUT the mutex.
+                 (unless (sb-thread:condition-wait (getf box :cv) (getf box :lock) :timeout 1)
+                   (sb-thread:grab-mutex (getf box :lock))))))
     (getf box :value)))
 
 (defun initialize (cl)
