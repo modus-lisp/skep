@@ -20,11 +20,11 @@
   (require :asdf)
   (unless (find-package :ql)
     (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (funcall (read-from-string "ql:quickload") '(:com.inuoe.jzon) :silent t))
+  (funcall (read-from-string "ql:quickload") '(:json-simple) :silent t))
 
 (defpackage #:skep.acp
   (:use #:cl)
-  (:local-nicknames (#:jzon #:com.inuoe.jzon))
+  (:local-nicknames (#:json #:json-simple))
   (:export #:make-client #:initialize #:run-turn #:shutdown #:make-acp-answer-fn
            #:*permission-policy* #:client-alive-p))
 (in-package #:skep.acp)
@@ -45,7 +45,7 @@
 
 ;;; ------------------------------ transport ------------------------------
 (defun send-msg (cl obj)
-  (let ((s (jzon:stringify obj)))
+  (let ((s (json:stringify obj)))
     (sb-thread:with-mutex ((getf cl :wlock))
       (write-string s (getf cl :in)) (write-char #\Newline (getf cl :in))
       (force-output (getf cl :in)))))
@@ -102,7 +102,7 @@
 (defun reader-loop (cl)
   (handler-case
       (loop for line = (read-line (getf cl :out) nil nil) while line do
-        (let ((msg (ignore-errors (jzon:parse line))))
+        (let ((msg (ignore-errors (json:parse line))))
           (when (hash-table-p msg) (dispatch cl msg))))
     (serious-condition () nil))
   (setf (getf cl :dead) t))

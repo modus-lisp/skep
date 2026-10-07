@@ -10,8 +10,8 @@
 
 (require :asdf)
 (unless (find-package :ql) (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-(funcall (read-from-string "ql:quickload") '(:com.inuoe.jzon) :silent t)
-(defpackage #:stub (:use #:cl) (:local-nicknames (#:jzon #:com.inuoe.jzon)))
+(funcall (read-from-string "ql:quickload") '(:json-simple) :silent t)
+(defpackage #:stub (:use #:cl) (:local-nicknames (#:json #:json-simple)))
 (in-package #:stub)
 
 (defun ht (&rest kvs)
@@ -22,7 +22,7 @@
     (setf m (cond ((and (integerp k) (vectorp m) (< k (length m))) (aref m k))
                   ((hash-table-p m) (gethash k m)) (t nil)))))
 (defun emit (obj)
-  (write-string (jzon:stringify obj) *standard-output*)
+  (write-string (json:stringify obj) *standard-output*)
   (write-char #\Newline *standard-output*)
   (force-output *standard-output*))
 (defun respond (id result) (emit (ht "jsonrpc" "2.0" "id" id "result" result)))
@@ -34,7 +34,7 @@
                            "content" (ht "type" "text" "text" text)))))
 
 (loop for line = (read-line *standard-input* nil nil) while line do
-  (let ((msg (ignore-errors (jzon:parse line))))
+  (let ((msg (ignore-errors (json:parse line))))
     (when (hash-table-p msg)
       (let ((id (gethash "id" msg)) (method (gethash "method" msg))
             (params (gethash "params" msg)))

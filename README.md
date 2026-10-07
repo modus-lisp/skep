@@ -39,7 +39,10 @@ bash test/run.sh             # relay + host + auth + cli + acp oracles (64 check
 ```
 
 Requires SBCL + Quicklisp (`usocket`, `fast-websocket`, `websocket-driver`,
-`com.inuoe.jzon`, `ironclad`, `cl-ppcre`, `cl-base64`, `bordeaux-threads`).
+`ironclad`, `cl-ppcre`, `cl-base64`, `bordeaux-threads`), plus
+[json-simple](https://github.com/modus-lisp/json-simple) where Quicklisp can
+find it (e.g. cloned into `~/quicklisp/local-projects/`, or from the modus-lisp
+dist).
 
 ## Status
 

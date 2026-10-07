@@ -17,7 +17,7 @@
 (defpackage #:skep.cli
   (:use #:cl)
   (:local-nicknames (#:skep #:skep) (#:n #:skep.nostr) (#:ic #:ironclad)
-                    (#:jzon #:com.inuoe.jzon) (#:b32 #:skep.crypto.bech32))
+                    (#:json #:json-simple) (#:b32 #:skep.crypto.bech32))
   (:export #:parse-secret #:send-message #:parse-args #:main))
 (in-package #:skep.cli)
 
@@ -44,7 +44,7 @@
   (let ((raw (sb-ext:posix-getenv "BUZZ_AUTH_TAG")))
     (when (and raw (plusp (length raw)))
       (ignore-errors
-        (let ((a (jzon:parse raw)))
+        (let ((a (json:parse raw)))
           (when (and (vectorp a) (plusp (length a))) a))))))
 
 ;;; ----------------------------- send -----------------------------------

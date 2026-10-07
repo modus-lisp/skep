@@ -11,13 +11,13 @@
 
 (require :asdf)
 (unless (find-package :ql) (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-(funcall (read-from-string "ql:quickload") '(:com.inuoe.jzon) :silent t)
-(defpackage #:pstub (:use #:cl) (:local-nicknames (#:jzon #:com.inuoe.jzon)))
+(funcall (read-from-string "ql:quickload") '(:json-simple) :silent t)
+(defpackage #:pstub (:use #:cl) (:local-nicknames (#:json #:json-simple)))
 (in-package #:pstub)
 
 (defun ht (&rest kvs) (let ((h (make-hash-table :test 'equal)))
   (loop for (k v) on kvs by #'cddr do (setf (gethash k h) v)) h))
-(defun emit (o) (write-string (jzon:stringify o) *standard-output*)
+(defun emit (o) (write-string (json:stringify o) *standard-output*)
   (write-char #\Newline *standard-output*) (force-output))
 (defun all-text (params)
   "Join every text block of the prompt (buzz-acp sends [Base], [Context], [event])."
@@ -50,7 +50,7 @@
         :search t :wait t :output *error-output* :error *error-output*))))
 
 (loop for line = (read-line *standard-input* nil nil) while line do
-  (let ((msg (ignore-errors (jzon:parse line))))
+  (let ((msg (ignore-errors (json:parse line))))
     (when (hash-table-p msg)
       (let ((id (gethash "id" msg)) (method (gethash "method" msg)) (params (gethash "params" msg)))
         (cond

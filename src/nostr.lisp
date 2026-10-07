@@ -10,7 +10,7 @@
   (unless (find-package :ql)
     (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
   (funcall (read-from-string "ql:quickload")
-           '(:ironclad :com.inuoe.jzon :cl-base64 :bordeaux-threads :websocket-driver-client)
+           '(:ironclad :json-simple :cl-base64 :bordeaux-threads :websocket-driver-client)
            :silent t)
   (let ((here (or *load-truename* *compile-file-truename*)))
     (load (merge-pathnames "secp256k1.lisp" here))
@@ -19,7 +19,7 @@
 
 (defpackage #:skep.nostr
   (:use #:cl)
-  (:local-nicknames (#:jzon #:com.inuoe.jzon) (#:ic #:ironclad)
+  (:local-nicknames (#:json #:json-simple) (#:ic #:ironclad)
                     (#:secp #:skep.crypto.secp256k1)
                     (#:schnorr #:skep.crypto.schnorr)
                     (#:b32 #:skep.crypto.bech32)
@@ -34,7 +34,7 @@
 
 (defun utf8 (s) (sb-ext:string-to-octets s :external-format :utf-8))
 (defun unix-now () (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0)))
-(defun json (obj) (with-output-to-string (s) (jzon:stringify obj :stream s)))
+(defun json (obj) (with-output-to-string (s) (json:stringify obj :stream s)))
 (defun urandom (n)
   (with-open-file (s #P"/dev/urandom" :element-type '(unsigned-byte 8))
     (let ((v (make-array n :element-type '(unsigned-byte 8)))) (read-sequence v s) v)))
@@ -50,7 +50,7 @@
 (defun event-id-hex (pub created kind tags content)
   "Canonical NIP-01 event id: sha256 of [0,pubkey,created_at,kind,tags,content]."
   (let ((ser (with-output-to-string (s)
-               (jzon:stringify (vector 0 pub created kind tags content) :stream s))))
+               (json:stringify (vector 0 pub created kind tags content) :stream s))))
     (ic:byte-array-to-hex-string (ic:digest-sequence :sha256 (utf8 ser)))))
 
 (defun sign-event (sec-int pub created kind tags content)
@@ -130,7 +130,7 @@
               (wsd:on :message c
                       (lambda (m)
                         (handler-case
-                            (let ((a (jzon:parse m)))
+                            (let ((a (json:parse m)))
                               (when (and (vectorp a) (>= (length a) 3) (equal (aref a 0) "EVENT"))
                                 (let* ((ev (aref a 2)) (id (gethash "id" ev)))
                                   (unless (gethash id seen) (setf (gethash id seen) t) (push ev out)))))

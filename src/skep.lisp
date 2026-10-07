@@ -24,14 +24,14 @@
     (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
   (funcall (read-from-string "ql:quickload")
            '(:usocket :fast-websocket :cl-ppcre :ironclad :cl-base64
-                  :com.inuoe.jzon :bordeaux-threads :websocket-driver-client)
+                  :json-simple :bordeaux-threads :websocket-driver-client)
                  :silent t)
   (let ((here (or *load-truename* *compile-file-truename*)))
     (load (merge-pathnames "nostr.lisp" here))))
 
 (defpackage #:skep
   (:use #:cl)
-  (:local-nicknames (#:jzon #:com.inuoe.jzon) (#:ic #:ironclad)
+  (:local-nicknames (#:json #:json-simple) (#:ic #:ironclad)
                     (#:ppcre #:cl-ppcre) (#:n #:skep.nostr)
                     (#:wsd #:websocket-driver))
   (:export #:start-relay #:stop-relay #:*relay-port* #:relay-url #:reset-store!
@@ -187,7 +187,7 @@
   (ignore-errors
     (when (and auth (>= (length auth) 6) (string-equal (subseq auth 0 6) "Nostr "))
       (let* ((bytes (cl-base64:base64-string-to-usb8-array (string-trim " " (subseq auth 6))))
-             (ev (jzon:parse (sb-ext:octets-to-string bytes :external-format :utf-8))))
+             (ev (json:parse (sb-ext:octets-to-string bytes :external-format :utf-8))))
         (when (and (= 27235 (truncate (gethash "kind" ev)))
                    (n:verify-event ev)
                    (equal method (tag-val ev "method"))
@@ -198,7 +198,7 @@
           (gethash "pubkey" ev))))))
 (defun rest-events (body pub stream)
   (declare (ignore pub))
-  (let ((ev (ignore-errors (jzon:parse (sb-ext:octets-to-string body :external-format :utf-8)))))
+  (let ((ev (ignore-errors (json:parse (sb-ext:octets-to-string body :external-format :utf-8)))))
     (cond
       ((not (and (hash-table-p ev) (n:verify-event ev)))
        (http-write stream "400 Bad Request" "{\"error\":\"invalid event\"}"))
@@ -211,7 +211,7 @@
                        (n:json (let ((h (make-hash-table :test 'equal)))
                                  (setf (gethash "id" h) (gethash "id" ev)) h))))))))
 (defun query-filters (body)
-  (let ((f (ignore-errors (jzon:parse (sb-ext:octets-to-string body :external-format :utf-8)))))
+  (let ((f (ignore-errors (json:parse (sb-ext:octets-to-string body :external-format :utf-8)))))
     (cond ((vectorp f) (coerce f 'list)) ((listp f) f) ((hash-table-p f) (list f)) (t nil))))
 (defun rest-query (body pub stream)
   (let ((conn (list :authed-pubkey pub)) (matches '()) (flist (query-filters body)))
@@ -307,32 +307,32 @@
                        :initial-value most-positive-fixnum)))
       (when (< lim (length matches)) (setf matches (subseq matches 0 lim))))
     (dolist (ev (reverse matches))
-      (relay-send conn (format nil "[\"EVENT\",~a,~a]" (jzon:stringify sub) (n:json ev))))
-    (relay-send conn (format nil "[\"EOSE\",~a]" (jzon:stringify sub)))))
+      (relay-send conn (format nil "[\"EVENT\",~a,~a]" (json:stringify sub) (n:json ev))))
+    (relay-send conn (format nil "[\"EOSE\",~a]" (json:stringify sub)))))
 (defun relay-broadcast (ev)
   (let ((conns (sb-thread:with-mutex (*relay-lock*) (copy-list *relay-conns*))))
     (dolist (conn conns)
       (when (conn-may-see-p conn ev)
         (maphash (lambda (sub filters)
                    (when (some (lambda (f) (event-matches ev f)) filters)
-                     (relay-send conn (format nil "[\"EVENT\",~a,~a]" (jzon:stringify sub) (n:json ev)))))
+                     (relay-send conn (format nil "[\"EVENT\",~a,~a]" (json:stringify sub) (n:json ev)))))
                  (getf conn :subs))))))
 (defun relay-on-event (conn ev)
   (let ((id (gethash "id" ev)) (kind (truncate (gethash "kind" ev))))
     (cond
       ((not (n:verify-event ev))
-       (relay-send conn (format nil "[\"OK\",~a,false,\"invalid: bad signature\"]" (jzon:stringify id))))
+       (relay-send conn (format nil "[\"OK\",~a,false,\"invalid: bad signature\"]" (json:stringify id))))
       ((not (may-write-p ev))
-       (relay-send conn (format nil "[\"OK\",~a,false,\"restricted: not a member of this channel\"]" (jzon:stringify id))))
+       (relay-send conn (format nil "[\"OK\",~a,false,\"restricted: not a member of this channel\"]" (json:stringify id))))
       (t
        (let ((accepted (relay-ingest ev)))
-         (relay-send conn (format nil "[\"OK\",~a,true,~a]" (jzon:stringify id)
+         (relay-send conn (format nil "[\"OK\",~a,true,~a]" (json:stringify id)
                                   (if (or accepted (ephemeral-p kind)) "\"\"" "\"duplicate: have this event\"")))
          (when (or accepted (ephemeral-p kind)) (relay-broadcast ev))
          (when (and accepted (admin-kind-p kind)) (process-admin-event ev)))))))
 (defun relay-on-message (conn msg)
   (handler-case
-      (let ((a (jzon:parse (if (stringp msg) msg (sb-ext:octets-to-string msg :external-format :utf-8)))))
+      (let ((a (json:parse (if (stringp msg) msg (sb-ext:octets-to-string msg :external-format :utf-8)))))
         (when (and (vectorp a) (plusp (length a)))
           (let ((typ (aref a 0)))
             (cond ((equal typ "EVENT") (relay-on-event conn (aref a 1)))
@@ -356,9 +356,9 @@
 (defun relay-on-auth (conn ev)
   (if (verify-auth conn ev)
       (progn (setf (getf conn :authed-pubkey) (gethash "pubkey" ev))
-             (relay-send conn (format nil "[\"OK\",~a,true,\"\"]" (jzon:stringify (gethash "id" ev)))))
+             (relay-send conn (format nil "[\"OK\",~a,true,\"\"]" (json:stringify (gethash "id" ev)))))
       (relay-send conn (format nil "[\"OK\",~a,false,\"auth failed\"]"
-                               (jzon:stringify (if (hash-table-p ev) (gethash "id" ev) ""))))))
+                               (json:stringify (if (hash-table-p ev) (gethash "id" ev) ""))))))
 
 (defun read-n (stream n)
   (if (zerop n) (make-array 0 :element-type '(unsigned-byte 8))
@@ -393,7 +393,7 @@
            ;; NIP-42: challenge immediately on connect (Buzz-style).
            (let ((challenge (rand-hex 16)))
              (setf (getf conn :challenge) challenge)
-             (relay-send conn (format nil "[\"AUTH\",~a]" (jzon:stringify challenge))))
+             (relay-send conn (format nil "[\"AUTH\",~a]" (json:stringify challenge))))
            (let* ((ws (fast-websocket:make-ws))
                   (parser (fast-websocket:make-parser
                            ws :require-masking t
@@ -574,7 +574,7 @@
           (wsd:on :message c
                   (lambda (m)
                     (handler-case
-                        (let ((a (jzon:parse m)))
+                        (let ((a (json:parse m)))
                           (when (and (vectorp a) (>= (length a) 3)
                                      (equal (aref a 0) "OK") (equal (aref a 1) id))
                             (setf ok (eq (aref a 2) t) done t)))
@@ -612,7 +612,7 @@
             (wsd:on :message c
                     (lambda (m)
                       (handler-case
-                          (let ((a (jzon:parse m)))
+                          (let ((a (json:parse m)))
                             (when (and (vectorp a) (plusp (length a)))
                               (cond
                                 ((equal (aref a 0) "AUTH")
@@ -649,7 +649,7 @@
             (wsd:on :message c
                     (lambda (m)
                       (handler-case
-                          (let ((a (jzon:parse m)))
+                          (let ((a (json:parse m)))
                             (when (and (vectorp a) (plusp (length a)))
                               (cond
                                 ((equal (aref a 0) "AUTH")
