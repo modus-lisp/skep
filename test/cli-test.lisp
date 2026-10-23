@@ -24,9 +24,11 @@
 (let ((nsec "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe7")
       (hex  "67dea2ed018072d675f5415ecfaed7d2597555e202d85b3d65ea4e58d2d92ffa"))
   (check "nsec decodes to the spec's hex key"
-         (= (cli:parse-secret nsec) (parse-integer hex :radix 16)))
-  (check "64-hex parses to the same integer"
-         (= (cli:parse-secret hex) (parse-integer hex :radix 16))))
+         (equalp (cli:parse-secret nsec) (ironclad:hex-string-to-byte-array hex)))
+  (check "64-hex parses to the same key"
+         (equalp (cli:parse-secret hex) (ironclad:hex-string-to-byte-array hex)))
+  (check "the parsed key is in fixed memory (never the moving heap)"
+         (gossamer:fixed-p (cli:parse-secret hex))))
 
 (format t "~&== parse-args ==~%")
 (multiple-value-bind (pos flags)
@@ -44,7 +46,7 @@
 (sleep 0.4)
 (defparameter *url* (skep:relay-url skep:*relay-port*))
 (defparameter *k* (n:gen-key))
-(defparameter *hex* (string-downcase (format nil "~64,'0X" *k*)))
+(defparameter *hex* (ironclad:byte-array-to-hex-string *k*))   ; the key as a user would pass it
 
 (format t "~&== send-message round-trips on the relay ==~%")
 (defparameter *chan* (skep:new-channel :name "cli" :members (list (n:hex-pubkey *k*))))

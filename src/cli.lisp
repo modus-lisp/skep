@@ -31,11 +31,13 @@
       (ic:byte-array-to-hex-string
        (make-array (length bytes) :element-type '(unsigned-byte 8) :initial-contents bytes)))))
 (defun parse-secret (s)
-  "A secp256k1 secret (integer) from a 64-hex string or an nsec1… (NIP-19)."
+  "A secp256k1 secret, as a pooled fixed buffer, from a 64-hex string or an nsec1…
+(NIP-19).  The decoded heap bytes are wiped once copied."
   (cond ((and (= (length s) 64) (every (lambda (c) (digit-char-p c 16)) s))
-         (parse-integer s :radix 16))
+         (n:import-secret (ic:hex-string-to-byte-array s)))
         ((and (> (length s) 4) (string-equal (subseq s 0 4) "nsec"))
-         (parse-integer (bech32->hex s "nsec") :radix 16))
+         (let ((hex (bech32->hex s "nsec")))
+           (unwind-protect (n:import-secret (ic:hex-string-to-byte-array hex)) (fill hex #\0))))
         (t (error "private key must be 64-hex or nsec1…"))))
 
 (defun auth-tag-from-env ()

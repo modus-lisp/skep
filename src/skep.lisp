@@ -15,11 +15,12 @@
 ;;;; fans out on #h/#p), NIP-42 auth + private-channel membership gating, and the
 ;;;; NIP-29 message/channel builders.
 ;;;;
-;;;; Built on skep's own Nostr client (src/nostr.lisp) and vendored crypto
-;;;; (src/{secp256k1,schnorr,bech32}.lisp) — no external crypto dependency.
+;;;; Built on skep's own Nostr client (src/nostr.lisp), which signs with modus-lisp's
+;;;; secp256k1-fast (constant-time, keys in fixed memory); bech32 is src/bech32.lisp.
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :asdf)
+  (load (merge-pathnames "deps.lisp" (or *load-truename* *compile-file-truename*)))
   (unless (find-package :ql)
     (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
   (funcall (read-from-string "ql:quickload")
@@ -452,19 +453,15 @@
 ;;; addressable group events: 39000 (metadata), 39001 (admins), 39002 (members).
 ;;; Clients (buzz-cli's `channels create`, buzz-acp's channel discovery) read
 ;;; those. skep reproduces this so a channel forms here directly — no seeding.
-(defvar *relay-sec* nil "the relay's own signing key (integer) for 39xxx events.")
+(defvar *relay-sec* nil "the relay's own signing key (a fixed 32-byte secret) for 39xxx events.")
 (defparameter *relay-key-file* (merge-pathnames ".skep/relay.key" (user-homedir-pathname)))
 (defun ensure-relay-key ()
   (or *relay-sec*
       (setf *relay-sec*
             (if (probe-file *relay-key-file*)
-                (with-open-file (s *relay-key-file*) (parse-integer (read-line s) :radix 16))
+                (n:read-key-file *relay-key-file*)
                 (let ((k (nth-value 0 (n:gen-key))))
-                  (ignore-errors
-                    (ensure-directories-exist *relay-key-file*)
-                    (with-open-file (s *relay-key-file* :direction :output
-                                       :if-exists :supersede :if-does-not-exist :create)
-                      (format s "~(~64,'0x~)~%" k)))
+                  (ignore-errors (n:write-key-file *relay-key-file* k))
                   k)))))
 (defun relay-pubkey () (n:hex-pubkey (ensure-relay-key)))
 (defun admin-kind-p (kind) (<= 9000 kind 9022))

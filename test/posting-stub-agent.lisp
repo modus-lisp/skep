@@ -11,6 +11,7 @@
 
 (require :asdf)
 (unless (find-package :ql) (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
+(load (merge-pathnames "../src/deps.lisp" (or *load-truename* *compile-file-truename*)))
 (funcall (read-from-string "ql:quickload") '(:json-simple) :silent t)
 (defpackage #:pstub (:use #:cl) (:local-nicknames (#:json #:json-simple)))
 (in-package #:pstub)

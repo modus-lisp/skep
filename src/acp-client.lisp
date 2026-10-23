@@ -18,6 +18,7 @@
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :asdf)
+  (load (merge-pathnames "deps.lisp" (or *load-truename* *compile-file-truename*)))
   (unless (find-package :ql)
     (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
   (funcall (read-from-string "ql:quickload") '(:json-simple) :silent t))

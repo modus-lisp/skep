@@ -12,7 +12,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          path: skep
           submodules: recursive
+
+      # skep signs with modus-lisp's secp256k1-fast (keys in natrium's gossamer
+      # memory).  src/deps.lisp finds those beside the checkout, so clone them there.
+      - name: Sibling checkouts
+        run: |
+          for repo in natrium secp256k1-fast json-simple; do
+            git clone --depth 1 -q https://github.com/modus-lisp/$repo.git "$repo"
+          done
       - name: Install SBCL
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
 
@@ -20,7 +29,7 @@ jobs:
       # (load "~/quicklisp/setup.lisp") and quickloads its libraries — so the runner
       # has to have one.  That is why the suite passed on every developer machine and
       # nowhere else: the init file had already done it.  The list mirrors the
-      # quickloads in src/skep.lisp, src/nostr.lisp and src/schnorr.lisp; quicklisp
+      # quickloads in src/skep.lisp and src/nostr.lisp; quicklisp
       # resolves their own dependencies from there.
       - name: Quicklisp dependencies
         run: |
@@ -39,8 +48,9 @@ jobs:
             sleep 10
           done
           # json-simple is a modus-lisp sibling, not on Quicklisp: local-projects.
-          git clone --depth 1 https://github.com/modus-lisp/json-simple.git ~/quicklisp/local-projects/json-simple
+          ln -s "$GITHUB_WORKSPACE/json-simple" ~/quicklisp/local-projects/json-simple
           sbcl --non-interactive --eval '(ql:quickload (list :usocket :fast-websocket :cl-ppcre :ironclad :cl-base64 :json-simple :bordeaux-threads :websocket-driver-client))'
 
       - name: Oracles
+        working-directory: skep
         run: bash test/run.sh

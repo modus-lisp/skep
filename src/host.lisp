@@ -23,7 +23,8 @@
 (in-package #:skep.host)
 
 ;;; ------------------------------- config -------------------------------
-(defvar *agent-sec* nil "the agent's secp256k1 secret (integer). Set before start.")
+(defvar *agent-sec* nil "the agent's secp256k1 secret (a fixed 32-byte buffer, e.g. from
+SKEP.NOSTR:READ-KEY-FILE or GEN-KEY).  Set before start.")
 (defvar *relay* nil "skep relay ws url; defaults to the local relay.")
 (defvar *owner* nil "owner pubkey hex (NIP-OA); when set + *respond-to* = :owner, only the owner triggers.")
 (defparameter *poll-secs* 4)

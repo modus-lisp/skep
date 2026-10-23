@@ -23,7 +23,7 @@ fails=0; ok(){ echo "  ok   $1"; }; bad(){ echo "  FAIL $1"; fails=$((fails+1));
 
 lisp(){ local f; f=$(mktemp /tmp/skep-acp-XXXX.lisp); printf '%s\n' "$1" > "$f"; sbcl --script "$f" 2>/dev/null; rm -f "$f"; }
 # fresh keypairs (agent = the buzz-acp identity; human = the poster)
-readarray -t K < <(lisp "(load \"$REPO/src/skep.lisp\")(in-package #:skep)(dolist (w '(a h))(multiple-value-bind (s p n)(n:gen-key)(declare (ignore n))(format t \"~(~64,'0x~) ~a~%\" s p)))")
+readarray -t K < <(lisp "(load \"$REPO/src/skep.lisp\")(in-package #:skep)(dolist (w '(a h))(multiple-value-bind (s p n)(n:gen-key)(declare (ignore n))(format t \"~a ~a~%\" (ironclad:byte-array-to-hex-string s) p)))")
 AGENT_PRIV=${K[0]% *}; AGENT_PUB=${K[0]#* }; HUMAN_PRIV=${K[1]% *}
 
 # skep relay
@@ -49,7 +49,7 @@ grep -q 'subscribed to channel' /tmp/skep-buzzacp.log && ok "buzz-acp connected 
   || bad "buzz-acp did not subscribe (see /tmp/skep-buzzacp.log)"
 
 # human @mentions the agent
-lisp "(load \"$REPO/src/skep.lisp\")(in-package #:skep)(post-message (build-message (parse-integer \"$HUMAN_PRIV\" :radix 16) \"$CH\" \"hey @agent, status?\" :mentions (list \"$AGENT_PUB\")) :url \"ws://127.0.0.1:$PORT\")"
+lisp "(load \"$REPO/src/skep.lisp\")(in-package #:skep)(post-message (build-message (n:import-secret (ironclad:hex-string-to-byte-array \"$HUMAN_PRIV\")) \"$CH\" \"hey @agent, status?\" :mentions (list \"$AGENT_PUB\")) :url \"ws://127.0.0.1:$PORT\")"
 sleep 18
 
 grep -q 'turn complete' /tmp/skep-buzzacp.log && ok "buzz-acp drove the agent through a full turn" || bad "no turn completed"

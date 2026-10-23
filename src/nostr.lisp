@@ -1,31 +1,37 @@
 ;;;; src/nostr.lisp — skep's minimal, self-contained Nostr client.
 ;;;;
-;;;; Event id/serialization + Schnorr (BIP-340) signing/verification over the
-;;;; vendored crypto (skep.crypto.{secp256k1,schnorr,bech32}), plus a tiny
+;;;; Event id/serialization + Schnorr (BIP-340) signing/verification, plus a tiny
 ;;;; websocket publish/fetch. This is the whole Nostr layer skep needs; the relay,
 ;;;; channel model, ACP host and CLI build on it.
+;;;;
+;;;; The curve is modus-lisp's: secp256k1-fast signs in constant time from a
+;;;; private key held in FIXED memory (the `gossamer' library), never an integer and
+;;;; never a heap vector -- a "sec" throughout skep is such a 32-byte buffer.  The
+;;;; libraries are found by src/deps.lisp.
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :asdf)
+  (require :sb-posix)
   (unless (find-package :ql)
     (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
+  (load (merge-pathnames "deps.lisp" (or *load-truename* *compile-file-truename*)))
   (funcall (read-from-string "ql:quickload")
            '(:ironclad :json-simple :cl-base64 :bordeaux-threads :websocket-driver-client)
            :silent t)
+  (asdf:load-system "secp256k1-fast")
   (let ((here (or *load-truename* *compile-file-truename*)))
-    (load (merge-pathnames "secp256k1.lisp" here))
-    (load (merge-pathnames "schnorr.lisp" here))
     (load (merge-pathnames "bech32.lisp" here))))
 
 (defpackage #:skep.nostr
   (:use #:cl)
   (:local-nicknames (#:json #:json-simple) (#:ic #:ironclad)
-                    (#:secp #:skep.crypto.secp256k1)
-                    (#:schnorr #:skep.crypto.schnorr)
+                    (#:secp #:secp256k1-fast)
+                    (#:schnorr #:secp256k1-fast.schnorr)
                     (#:b32 #:skep.crypto.bech32)
                     (#:wsd #:websocket-driver))
   (:export #:*relays* #:unix-now #:urandom #:json #:utf8
            #:event-id-hex #:sign-event #:verify-event #:hex-pubkey #:gen-key
+           #:import-secret #:read-key-file #:write-key-file
            #:publish #:fetch-events #:npub->hex #:hex->npub))
 (in-package #:skep.nostr)
 
@@ -39,12 +45,45 @@
   (with-open-file (s #P"/dev/urandom" :element-type '(unsigned-byte 8))
     (let ((v (make-array n :element-type '(unsigned-byte 8)))) (read-sequence v s) v)))
 
-(defun hex-pubkey (sec-int)
-  (ic:byte-array-to-hex-string (schnorr:pubkey-xonly sec-int)))
+(defun hex-pubkey (sec)
+  "The x-only public key of SEC (a fixed 32-byte secret), as hex."
+  (ic:byte-array-to-hex-string (schnorr:pubkey-xonly sec)))
+
 (defun gen-key ()
-  "Mint a fresh keypair. (values sec-int pubkey-hex npub)."
-  (let* ((sec (secp:bytes-to-int (urandom 32))) (hex (hex-pubkey sec)))
-    (values sec hex (hex->npub hex))))
+  "Mint a fresh key. (values sec pubkey-hex npub): SEC is a pooled fixed buffer,
+filled from natrium's CSPRNG and rejection-sampled into [1, n)."
+  (let ((sec (gossamer:acquire :octets 32)))
+    (loop (natrium:random-bytes-into sec) (when (secp:seckey-valid-p sec) (return)))
+    (let ((hex (hex-pubkey sec)))
+      (values sec hex (hex->npub hex)))))
+
+(defun import-secret (bytes)
+  "A secret that arrived from outside (a file, an argument) as a pooled fixed
+buffer.  BYTES is wiped: the fixed copy is the only one left."
+  (unless (= (length bytes) 32) (fill bytes 0) (error "a secp256k1 secret is 32 bytes"))
+  (unwind-protect
+       (let ((sec (gossamer:pooled-copy bytes)))
+         (unless (secp:seckey-valid-p sec) (gossamer:free sec) (error "not a valid secp256k1 secret"))
+         sec)
+    (fill bytes 0)))
+
+(defun read-key-file (path)
+  "The secret stored as 64 hex characters in PATH.  The text read is overwritten."
+  (let* ((line (with-open-file (s path) (read-line s)))
+         (hex (string-trim '(#\Space #\Tab #\Newline #\Return) line)))
+    (unwind-protect (import-secret (ic:hex-string-to-byte-array hex))
+      (fill hex #\0) (fill line #\0))))
+
+(defun write-key-file (path sec)
+  "Create PATH (mode 0600, refusing to overwrite) holding SEC as hex -- the explicit
+export of a secret, to its file."
+  (ensure-directories-exist path)
+  (let* ((fd (sb-posix:open (namestring path)
+                            (logior sb-posix:o-wronly sb-posix:o-creat sb-posix:o-excl) #o600))
+         (s (sb-sys:make-fd-stream fd :output t :external-format :latin-1 :auto-close t))
+         (hex (ic:byte-array-to-hex-string sec)))
+    (unwind-protect (format s "~a~%" hex) (close s) (fill hex #\0))
+    path))
 
 ;;; --------------------------- events (NIP-01) --------------------------
 (defun event-id-hex (pub created kind tags content)
@@ -53,11 +92,12 @@
                (json:stringify (vector 0 pub created kind tags content) :stream s))))
     (ic:byte-array-to-hex-string (ic:digest-sequence :sha256 (utf8 ser)))))
 
-(defun sign-event (sec-int pub created kind tags content)
-  "Return a fully-signed event hash-table."
+(defun sign-event (sec pub created kind tags content)
+  "Return a fully-signed event hash-table, signed under SEC (a fixed 32-byte secret)
+with fresh BIP-340 auxiliary randomness."
   (let* ((id (event-id-hex pub created kind tags content))
          (sig (ic:byte-array-to-hex-string
-               (schnorr:schnorr-sign sec-int (ic:hex-string-to-byte-array id))))
+               (schnorr:schnorr-sign sec (ic:hex-string-to-byte-array id) (natrium:random-bytes 32))))
          (h (make-hash-table :test 'equal)))
     (setf (gethash "id" h) id (gethash "pubkey" h) pub (gethash "created_at" h) created
           (gethash "kind" h) kind (gethash "tags" h) tags (gethash "content" h) content

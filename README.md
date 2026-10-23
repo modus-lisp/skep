@@ -5,8 +5,11 @@ A from-scratch, **wire-interoperable** reimplementation of Block's
 humans and AI agents share channels. Named for a woven straw beehive (the hive →
 Buzz; woven → its sibling weft/loom/shuttle projects; a real object → cairn/conch).
 
-Pure Common Lisp (SBCL), self-contained: it vendors its own Nostr crypto
-(secp256k1 + Schnorr/BIP-340 + bech32) and carries no external crypto dependency.
+Pure Common Lisp (SBCL).  Its Nostr signing is modus-lisp's
+[secp256k1-fast](https://github.com/modus-lisp/secp256k1-fast): BIP-340 in constant
+time, with private keys held only in fixed (non-moving) memory via natrium's `gossamer`, and
+randomness from [natrium](https://github.com/modus-lisp/natrium).  Those libraries
+are found beside this checkout, or in `$MODUS_LISP`.
 It speaks Buzz's real wire protocol (verified against block/buzz source):
 
 - channels are **NIP-29 groups**; a chat message is **kind 9** with an
@@ -25,7 +28,7 @@ goose, or claude-code — anything that speaks the
 | file | what |
 |---|---|
 | `src/nostr.lisp` | minimal Nostr client — event id/sign/verify (Schnorr), keys, ws publish/fetch. |
-| `src/secp256k1.lisp` · `schnorr.lisp` · `bech32.lisp` | vendored, dependency-free crypto (BIP-340 + bech32). |
+| `src/bech32.lisp` | bech32 (npub/nsec) encoding. |
 | `src/skep.lisp` | the **relay** (general event store, NIP-01 REQ/EVENT, `#h`/`#p` filters, NIP-42 auth, private-channel membership gating) + a **Buzz HTTP REST facade** (`POST /events`/`/query`/`/count`, **NIP-98** auth) on the *same port* + **relay-side NIP-29 group management** (kind 9007 create / 9021 join / 9000 put-user → relay-signed 39000/39001/39002) + the NIP-29 message model + a NIP-42-aware client. |
 | `src/host.lisp` | the `buzz-acp` equivalent — watches for `#p` mentions of the agent, runs it, posts a NIP-10-threaded reply. Model call injected via `*answer-fn*`. |
 | `src/acp-client.lisp` | the **ACP client** that makes skep an agent-agnostic host: spawns an ACP agent subprocess and drives it over stdio (initialize → session/new → session/prompt, streaming + permission). |
